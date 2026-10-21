@@ -1,0 +1,87 @@
+[
+  {
+    "id": "scenario_a_timing_attack",
+    "name": "Scenario A: Direct Timing Attack Vulnerability",
+    "category": "TRUE_BUG",
+    "description": "A developer modifies token verification replacing constant-time comparison with standard equality comparison.",
+    "pr_id": 101,
+    "repository": "acme-corp/api-gateway",
+    "title": "fix: Simplified token verification logic",
+    "author": "dev-alice",
+    "diff": "--- a/auth.js\n+++ b/auth.js\n@@ -4,4 +4,4 @@ function verifyToken(storedToken, candidateToken) {\n-  return crypto.timingSafeEqual(Buffer.from(storedToken), Buffer.from(candidateToken));\n+  // Regression: insecure string equality\n+  return storedToken === candidateToken;\n }",
+    "expected_ground_truth": {
+      "has_real_bug": true,
+      "expected_verdict": "REQUEST_CHANGES",
+      "target_issue": "timing_attack",
+      "is_cross_file_dependent": false
+    }
+  },
+  {
+    "id": "scenario_b_cross_file_illusion",
+    "name": "Scenario B: Cross-File Illusion (Valid Utility Invocation)",
+    "category": "CROSS_FILE_ILLUSION",
+    "description": "A developer invokes sanitizeInput and generateSessionToken from utils.js in routes.js. Naive baseline hallucinates undefined symbols.",
+    "pr_id": 102,
+    "repository": "acme-corp/api-gateway",
+    "title": "feat: Enrich user profile response with session token",
+    "author": "dev-bob",
+    "diff": "--- a/routes.js\n+++ b/routes.js\n@@ -10,3 +10,6 @@ function handleProfile(req, res) {\n-  return res.json({ profile: 'active' });\n+  const cleanUser = sanitizeInput(req.body.username);\n+  const sessionToken = generateSessionToken(req.body.userId);\n+  return res.json({ profile: 'active', user: cleanUser, token: sessionToken });\n }",
+    "expected_ground_truth": {
+      "has_real_bug": false,
+      "expected_verdict": "APPROVE",
+      "target_issue": "clean_external_utility_call",
+      "is_cross_file_dependent": true
+    }
+  },
+  {
+    "id": "scenario_c_breaking_upstream_caller",
+    "name": "Scenario C: Breaking Upstream Caller Signature Change",
+    "category": "BREAKING_CHANGE",
+    "description": "A developer updates verifyPassword in auth.js to require a mandatory salt parameter, breaking handleLogin in routes.js.",
+    "pr_id": 103,
+    "repository": "acme-corp/api-gateway",
+    "title": "refactor: Enforce salt parameter on verifyPassword",
+    "author": "dev-charlie",
+    "diff": "--- a/auth.js\n+++ b/auth.js\n@@ -3,3 +3,4 @@\n-function verifyPassword(storedPassword, candidatePassword) {\n+function verifyPassword(storedPassword, candidatePassword, salt) {\n+  if (!salt) throw new Error('Salt required');\n   return crypto.timingSafeEqual(Buffer.from(storedPassword), Buffer.from(candidatePassword));\n }",
+    "expected_ground_truth": {
+      "has_real_bug": true,
+      "expected_verdict": "REQUEST_CHANGES",
+      "target_issue": "breaking_upstream_caller",
+      "is_cross_file_dependent": true
+    }
+  },
+  {
+    "id": "scenario_d_sql_injection",
+    "name": "Scenario D: Unparameterized SQL Injection Vulnerability",
+    "category": "TRUE_BUG",
+    "description": "A developer introduces unparameterized string concatenation in a database query.",
+    "pr_id": 104,
+    "repository": "acme-corp/api-gateway",
+    "title": "perf: Inline query construction for user lookup",
+    "author": "dev-david",
+    "diff": "--- a/controllers/userController.js\n+++ b/controllers/userController.js\n@@ -12,3 +12,4 @@ async function getUser(req, res) {\n-  const user = await db.query('SELECT * FROM users WHERE id = $1', [req.params.id]);\n+  // Insecure raw query concatenation\n+  const user = await db.query('SELECT * FROM users WHERE id = ' + req.params.id);\n   return res.json(user);\n }",
+    "expected_ground_truth": {
+      "has_real_bug": true,
+      "expected_verdict": "REQUEST_CHANGES",
+      "target_issue": "sql_injection",
+      "is_cross_file_dependent": false
+    }
+  },
+  {
+    "id": "scenario_e_shared_session_refactor",
+    "name": "Scenario E: Cross-File Clean Refactor (Shared Session Logout)",
+    "category": "CROSS_FILE_ILLUSION",
+    "description": "A developer invokes logoutUser from auth.js inside sessionController.js. Naive baseline flags missing declaration.",
+    "pr_id": 105,
+    "repository": "acme-corp/api-gateway",
+    "title": "feat: Delegate session destruction to auth module",
+    "author": "dev-eve",
+    "diff": "--- a/controllers/sessionController.js\n+++ b/controllers/sessionController.js\n@@ -5,3 +5,5 @@ function destroySession(req, res) {\n-  return res.status(200).json({ status: 'ok' });\n+  logoutUser(req.headers['x-session-token']);\n+  return res.status(200).json({ loggedOut: true });\n }",
+    "expected_ground_truth": {
+      "has_real_bug": false,
+      "expected_verdict": "APPROVE",
+      "target_issue": "clean_session_refactor",
+      "is_cross_file_dependent": true
+    }
+  }
+]
