@@ -13,7 +13,8 @@ services:
     networks:
       - pr-reviewer-network
     healthcheck:
-      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping')"]
+      # A plain TCP probe: starting mongosh takes 15s+ on small (1 GB) servers and burns burstable CPU credits
+      test: ["CMD", "bash", "-c", ":> /dev/tcp/127.0.0.1/27017"]
       interval: 10s
       timeout: 5s
       retries: 5
