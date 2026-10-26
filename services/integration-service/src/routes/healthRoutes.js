@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { getDatabaseStatus } from '../config/db.js';
 import { checkAiServiceHealth } from '../services/aiServiceClient.js';
+import { usesSqs } from '../services/reviewQueue.js';
 
 const router = Router();
 
@@ -18,6 +19,7 @@ router.get('/health', async (req, res) => {
     dependencies: {
       mongodb: dbStatus,
       aiService: aiHealth,
+      reviewQueue: usesSqs ? 'sqs' : 'in-process',
     },
   });
 });

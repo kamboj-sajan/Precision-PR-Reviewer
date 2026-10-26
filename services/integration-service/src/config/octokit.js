@@ -37,14 +37,40 @@ export async function fetchPullRequestDiff(owner, repo, pullNumber) {
 }
 
 /**
+ * Hidden HTML comment embedded in every posted review, tying it to the webhook delivery that produced it.
+ */
+export function reviewMarker(deliveryId) {
+  return `<!-- precision-pr-reviewer:delivery=${deliveryId} -->`;
+}
+
+/**
+ * Whether a review or comment for this delivery is already on the pull request.
+ * Lets a retried job (SQS delivers at least once) skip posting the same review twice.
+ */
+export async function hasPostedReview(owner, repo, pullNumber, deliveryId) {
+  if (!hasLiveGithubToken) {
+    return false;
+  }
+  const marker = reviewMarker(deliveryId);
+  const [reviews, comments] = await Promise.all([
+    octokit.paginate(octokit.rest.pulls.listReviews, { owner, repo, pull_number: pullNumber, per_page: 100 }),
+    octokit.paginate(octokit.rest.issues.listComments, { owner, repo, issue_number: pullNumber, per_page: 100 }),
+  ]);
+  return [...reviews, ...comments].some((item) => (item.body || '').includes(marker));
+}
+
+/**
  * Publish a full GitHub Pull Request Review with line-level inline comments
  * using GitHub's native interactive suggestion markdown.
+ * Throws if neither the review nor the fallback comment could be posted, so the job is retried.
  */
-export async function submitPullRequestReview(owner, repo, pullNumber, commitSha, reviewData) {
-  if (!token || token === 'mock_dev_token') {
+export async function submitPullRequestReview(owner, repo, pullNumber, commitSha, reviewData, deliveryId) {
+  if (!hasLiveGithubToken) {
     console.log(`[Octokit] Skipping live GitHub PR review submission (no active GITHUB_TOKEN configured).`);
     return { mocked: true, message: 'Review generated and stored locally in MongoDB' };
   }
+
+  const marker = deliveryId ? `\n\n${reviewMarker(deliveryId)}` : '';
 
   try {
     const inlineComments = (reviewData.comments || []).map((c) => {
@@ -67,7 +93,7 @@ export async function submitPullRequestReview(owner, repo, pullNumber, commitSha
       pull_number: pullNumber,
       commit_id: commitSha,
       event: reviewEvent,
-      body: `## 🤖 Precision AI Pull Request Review\n\n**Verdict:** ${reviewData.verdict}\n**Confidence Score:** ${(reviewData.confidenceScore * 100).toFixed(1)}%\n\n${reviewData.summary}`,
+      body: `## 🤖 Precision AI Pull Request Review\n\n**Verdict:** ${reviewData.verdict}\n**Confidence Score:** ${(reviewData.confidenceScore * 100).toFixed(1)}%\n\n${reviewData.summary}${marker}`,
       comments: inlineComments.length > 0 ? inlineComments : undefined,
     });
 
@@ -78,11 +104,14 @@ export async function submitPullRequestReview(owner, repo, pullNumber, commitSha
     // Fallback: post as top-level comment
     try {
       const summaryBody = `### 🤖 Precision AI Review (${reviewData.verdict})\n\n${reviewData.summary}\n\n` +
-        (reviewData.comments || []).map(c => `- **${c.filePath}:${c.lineNumber}** [${c.severity}] ${c.comment}`).join('\n');
-      return await postReviewComment(owner, repo, pullNumber, summaryBody);
+        (reviewData.comments || []).map(c => `- **${c.filePath}:${c.lineNumber}** [${c.severity}] ${c.comment}`).join('\n') +
+        marker;
+      const comment = await postReviewComment(owner, repo, pullNumber, summaryBody);
+      console.log(`[Octokit] Posted review to GitHub PR #${pullNumber} as an issue comment (Comment ID: ${comment.id})`);
+      return comment;
     } catch (fbError) {
       console.error(`[Octokit] Fallback issue comment also failed: ${fbError.message}`);
-      return { error: fbError.message };
+      throw new Error(`Could not post review to ${owner}/${repo}#${pullNumber}: ${fbError.message}`);
     }
   }
 }
@@ -91,7 +120,7 @@ export async function submitPullRequestReview(owner, repo, pullNumber, commitSha
  * Fallback helper to post general issue comment onto Pull Request.
  */
 export async function postReviewComment(owner, repo, pullNumber, body) {
-  if (!token || token === 'mock_dev_token') {
+  if (!hasLiveGithubToken) {
     return { mocked: true, message: 'No GitHub token configured' };
   }
 

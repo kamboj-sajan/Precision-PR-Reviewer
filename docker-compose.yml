@@ -90,6 +90,11 @@ services:
       - AI_SERVICE_URL=http://ai-service:8000
       - GITHUB_WEBHOOK_SECRET=${GITHUB_WEBHOOK_SECRET:?Set GITHUB_WEBHOOK_SECRET in .env}
       - GITHUB_TOKEN=${GITHUB_TOKEN:-mock_dev_token}
+      # Review queue: with SQS_QUEUE_URL set, reviews go through SQS to review-worker; unset, they run in-process
+      - SQS_QUEUE_URL=${SQS_QUEUE_URL:-}
+      - AWS_REGION=${AWS_REGION:-ap-southeast-2}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
     depends_on:
       mongodb:
         condition: service_healthy
@@ -103,6 +108,31 @@ services:
       timeout: 5s
       retries: 5
       start_period: 10s
+
+  review-worker:
+    # Same image as the webhook service, running the SQS consumer instead of the HTTP server
+    build:
+      context: ./services/integration-service
+      dockerfile: Dockerfile
+    container_name: precision-reviewer-review-worker
+    restart: unless-stopped
+    command: ["node", "src/worker.js"]
+    environment:
+      - NODE_ENV=production
+      - MONGODB_URI=mongodb://mongodb:27017/pr_reviewer_db
+      - AI_SERVICE_URL=http://ai-service:8000
+      - GITHUB_TOKEN=${GITHUB_TOKEN:-mock_dev_token}
+      - SQS_QUEUE_URL=${SQS_QUEUE_URL:-}
+      - AWS_REGION=${AWS_REGION:-ap-southeast-2}
+      - AWS_ACCESS_KEY_ID=${AWS_ACCESS_KEY_ID:-}
+      - AWS_SECRET_ACCESS_KEY=${AWS_SECRET_ACCESS_KEY:-}
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      ai-service:
+        condition: service_healthy
+    networks:
+      - pr-reviewer-network
 
 volumes:
   mongodb_data:

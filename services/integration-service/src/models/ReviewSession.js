@@ -20,6 +20,9 @@ const reviewCommentSchema = new mongoose.Schema({
 
 const reviewSessionSchema = new mongoose.Schema(
   {
+    // GitHub's X-GitHub-Delivery ID; unique so a redelivered webhook is never queued twice.
+    // Sparse because sessions created before the queue existed have no delivery ID.
+    deliveryId: { type: String, unique: true, sparse: true },
     repository: {
       owner: { type: String, required: true },
       name: { type: String, required: true },
@@ -34,11 +37,14 @@ const reviewSessionSchema = new mongoose.Schema(
     headSha: { type: String, default: '' },
     diffSnippet: { type: String, default: '' },
     diffLength: { type: Number, default: 0 },
+    // Diff supplied in the webhook body itself (scripts/simulate_webhook.sh); real GitHub deliveries fetch it instead
+    inlineDiff: { type: String },
     status: {
       type: String,
-      enum: ['pending', 'processing', 'completed', 'failed'],
+      enum: ['pending', 'queued', 'processing', 'completed', 'failed'],
       default: 'pending',
     },
+    attempts: { type: Number, default: 0 },
     reviewResult: {
       summary: { type: String },
       verdict: {

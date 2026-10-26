@@ -20,6 +20,7 @@ export async function connectDB(uri) {
         serverSelectionTimeoutMS: 3000,
       });
       console.log(`[Database] Connected successfully to MongoDB at: ${mongoUri.replace(/\/\/.*@/, '//<credentials>@')}`);
+      await ensureIndexes();
       return;
     } catch (error) {
       console.warn(`[Database] Connection attempt ${attempt}/${maxRetries} failed: ${error.message}`);
@@ -28,6 +29,21 @@ export async function connectDB(uri) {
         return;
       }
       await new Promise((res) => setTimeout(res, 1500 * attempt));
+    }
+  }
+}
+
+/**
+ * Build every registered model's indexes. With bufferCommands off, Mongoose's automatic index build
+ * runs before the connection exists and fails silently, which would leave the unique deliveryId index
+ * (the webhook's duplicate guard) missing.
+ */
+async function ensureIndexes() {
+  for (const model of Object.values(mongoose.models)) {
+    try {
+      await model.createIndexes();
+    } catch (error) {
+      console.error(`[Database] Could not build indexes for ${model.modelName}: ${error.message}`);
     }
   }
 }

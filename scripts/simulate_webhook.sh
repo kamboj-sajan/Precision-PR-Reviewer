@@ -5,6 +5,7 @@
 
 TARGET_URL="${1:-http://localhost:3000/api/webhook}"
 # Must match GITHUB_WEBHOOK_SECRET on the integration service, or the delivery is rejected with 401
+# Set DELIVERY_ID to resend the same delivery and see the duplicate guard ignore it
 WEBHOOK_SECRET="${GITHUB_WEBHOOK_SECRET:-development_secret_token}"
 
 echo "📡 Simulating GitHub Pull Request Webhook Event to: ${TARGET_URL}"
@@ -46,6 +47,7 @@ curl -X POST "${TARGET_URL}" \
   -H "Content-Type: application/json" \
   -H "X-GitHub-Event: pull_request" \
   -H "X-Hub-Signature-256: ${SIGNATURE}" \
+  -H "X-GitHub-Delivery: ${DELIVERY_ID:-$(uuidgen | tr '[:upper:]' '[:lower:]')}" \
   --data-binary "${SAMPLE_PAYLOAD}"
 
 echo -e "\n\n✅ Webhook simulation complete."

@@ -1,79 +1,74 @@
+import crypto from 'node:crypto';
 import mongoose from 'mongoose';
 import { ReviewSession } from '../models/ReviewSession.js';
-import { fetchPullRequestDiff, submitPullRequestReview, hasLiveGithubToken } from '../config/octokit.js';
-import { forwardDiffToAiService } from '../services/aiServiceClient.js';
+import { enqueueReview } from '../services/reviewQueue.js';
+
+const defaultDeps = {
+  isDatabaseReady: () => mongoose.connection.readyState === 1,
+  createSession: (doc) => ReviewSession.create(doc),
+  deleteSession: (id) => ReviewSession.deleteOne({ _id: id }),
+  enqueueReview,
+};
 
 /**
- * Main Webhook handler for GitHub Pull Request events.
- * Listens for pull_request actions, extracts the diff, and coordinates RAG review.
+ * Build the GitHub webhook handler. It only records and queues the delivery, then answers 202 right away:
+ * GitHub gives up on a delivery after 10 seconds, and a review can take longer than that.
+ * The review itself runs in the worker (see services/reviewJob.js).
  */
-export async function handleWebhook(req, res) {
-  const githubEvent = req.headers['x-github-event'] || 'pull_request';
+export function createWebhookHandler(deps = defaultDeps) {
+  return async function handleWebhook(req, res) {
+    const githubEvent = req.headers['x-github-event'] || 'pull_request';
 
-  // Handle GitHub ping events for initial webhook handshake
-  if (githubEvent === 'ping') {
-    console.log('[WebhookController] Received GitHub ping event. Responding with pong.');
-    return res.status(200).json({ msg: 'pong', zen: req.body?.zen });
-  }
+    // Handle GitHub ping events for initial webhook handshake
+    if (githubEvent === 'ping') {
+      console.log('[WebhookController] Received GitHub ping event. Responding with pong.');
+      return res.status(200).json({ msg: 'pong', zen: req.body?.zen });
+    }
 
-  if (githubEvent !== 'pull_request') {
-    console.log(`[WebhookController] Ignoring unhandled event: ${githubEvent}`);
-    return res.status(200).json({ message: `Ignored event: ${githubEvent}` });
-  }
+    if (githubEvent !== 'pull_request') {
+      console.log(`[WebhookController] Ignoring unhandled event: ${githubEvent}`);
+      return res.status(200).json({ message: `Ignored event: ${githubEvent}` });
+    }
 
-  const payload = req.body;
-  const action = payload.action;
+    const payload = req.body;
+    const action = payload.action;
 
-  // Process PR lifecycle events: opened, synchronize (new commits pushed), reopened
-  const validActions = ['opened', 'synchronize', 'reopened'];
-  if (action && !validActions.includes(action)) {
-    console.log(`[WebhookController] Pull Request action '${action}' ignored.`);
-    return res.status(200).json({ message: `Action '${action}' ignored` });
-  }
+    // Process PR lifecycle events: opened, synchronize (new commits pushed), reopened
+    const validActions = ['opened', 'synchronize', 'reopened'];
+    if (action && !validActions.includes(action)) {
+      console.log(`[WebhookController] Pull Request action '${action}' ignored.`);
+      return res.status(200).json({ message: `Action '${action}' ignored` });
+    }
 
-  // Extract PR context from webhook payload
-  const pr = payload.pull_request || payload;
-  const repository = payload.repository || {
-    owner: { login: req.body.owner || 'unknown' },
-    name: req.body.repo || 'unknown-repo',
-    full_name: `${req.body.owner || 'unknown'}/${req.body.repo || 'unknown-repo'}`
-  };
+    // Extract PR context from webhook payload
+    const pr = payload.pull_request || payload;
+    const repository = payload.repository || {
+      owner: { login: req.body.owner || 'unknown' },
+      name: req.body.repo || 'unknown-repo',
+      full_name: `${req.body.owner || 'unknown'}/${req.body.repo || 'unknown-repo'}`
+    };
 
-  const owner = repository.owner?.login || repository.owner?.name || 'unknown-owner';
-  const repoName = repository.name || 'unknown-repo';
-  const pullNumber = pr.number || payload.number || 1;
-  const headSha = pr.head?.sha || payload.headSha || 'HEAD';
-  const headRef = pr.head?.ref || 'feature-branch';
-  const baseRef = pr.base?.ref || 'main';
-  const title = pr.title || 'PR Review Request';
-  const sender = payload.sender?.login || 'github-user';
+    const owner = repository.owner?.login || repository.owner?.name || 'unknown-owner';
+    const repoName = repository.name || 'unknown-repo';
+    const pullNumber = pr.number || payload.number || 1;
+    const headSha = pr.head?.sha || payload.headSha || 'HEAD';
+    const headRef = pr.head?.ref || 'feature-branch';
+    const baseRef = pr.base?.ref || 'main';
+    const title = pr.title || 'PR Review Request';
+    const sender = payload.sender?.login || 'github-user';
 
-  console.log(`[WebhookController] Processing PR #${pullNumber} (${action || 'opened'}) on ${owner}/${repoName}`);
+    // The delivery record is what makes redeliveries safe, so without the database the delivery is refused
+    if (!deps.isDatabaseReady()) {
+      console.error('[WebhookController] MongoDB not connected; rejecting delivery so it can be redelivered.');
+      return res.status(503).json({ success: false, error: 'Database unavailable; redeliver later' });
+    }
 
-  // 1. Extract git diff
-  let diff = payload.diff || payload.gitDiff;
-  if (!diff) {
-    console.log(`[WebhookController] Fetching diff from GitHub API for ${owner}/${repoName}#${pullNumber}...`);
-    diff = await fetchPullRequestDiff(owner, repoName, pullNumber);
-  }
+    const deliveryId = req.get('x-github-delivery') || `local-${crypto.randomUUID()}`;
 
-  // With a live token, never review a stand-in diff: the review would be posted to a real PR
-  if (!diff && hasLiveGithubToken) {
-    console.error(`[WebhookController] Could not fetch diff for ${owner}/${repoName}#${pullNumber}; skipping review.`);
-    return res.status(502).json({ success: false, error: `Could not fetch diff for ${owner}/${repoName}#${pullNumber}` });
-  }
-
-  // If still unavailable (e.g. during local offline testing), use simulated diff
-  if (!diff) {
-    console.warn(`[WebhookController] No diff from GitHub API. Utilizing sample diff for demonstration.`);
-    diff = `--- a/src/auth.js\n+++ b/src/auth.js\n@@ -10,6 +10,8 @@\n function authenticate(user, password) {\n-  return user.password === password;\n+  // Vulnerable to timing attacks\n+  return crypto.timingSafeEqual(Buffer.from(user.password), Buffer.from(password));\n }`;
-  }
-
-  // 2. Persist initial review session in MongoDB if connected
-  let reviewSession = null;
-  if (mongoose.connection.readyState === 1) {
+    let session;
     try {
-      reviewSession = new ReviewSession({
+      session = await deps.createSession({
+        deliveryId,
         repository: {
           owner,
           name: repoName,
@@ -86,81 +81,38 @@ export async function handleWebhook(req, res) {
         baseRef,
         headRef,
         headSha,
-        diffSnippet: diff.substring(0, 1000),
-        diffLength: diff.length,
-        status: 'processing',
+        inlineDiff: payload.diff || payload.gitDiff,
+        status: 'queued',
       });
-      await reviewSession.save();
-      console.log(`[WebhookController] Created MongoDB ReviewSession: ${reviewSession._id}`);
-    } catch (dbError) {
-      console.error(`[WebhookController] Error persisting ReviewSession to MongoDB: ${dbError.message}`);
-      reviewSession = null;
-    }
-  } else {
-    console.log('[WebhookController] MongoDB not connected; running session in ephemeral mode.');
-  }
-
-  try {
-    // 3. Dispatch diff and metadata to FastAPI AI / RAG Service
-    const aiPayload = {
-      pr_id: pullNumber,
-      repository: `${owner}/${repoName}`,
-      commit_sha: headSha,
-      title,
-      author: sender,
-      diff,
-    };
-
-    const aiResponse = await forwardDiffToAiService(aiPayload);
-    const reviewData = aiResponse.review || {};
-
-    const formattedReviewResult = {
-      summary: reviewData.summary || 'AI Review completed successfully.',
-      verdict: reviewData.verdict || 'COMMENT',
-      confidenceScore: reviewData.confidence_score || 0.95,
-      retrievedContextCount: reviewData.retrieved_context_count || 0,
-      comments: (reviewData.comments || []).map((c) => ({
-        filePath: c.file_path,
-        lineNumber: c.line_number,
-        severity: c.severity,
-        category: c.category,
-        comment: c.comment,
-        suggestedCode: c.suggested_code,
-        contextSnippet: c.context_snippet,
-      })),
-    };
-
-    // 4. Update MongoDB ReviewSession with completed AI review
-    if (reviewSession && mongoose.connection.readyState === 1) {
-      reviewSession.status = 'completed';
-      reviewSession.reviewResult = formattedReviewResult;
-      await reviewSession.save();
-      console.log(`[WebhookController] Updated ReviewSession ${reviewSession._id} to 'completed'.`);
+    } catch (error) {
+      if (error.code === 11000) {
+        console.log(`[WebhookController] Delivery ${deliveryId} was already received; ignoring the duplicate.`);
+        return res.status(200).json({ success: true, duplicate: true, deliveryId });
+      }
+      console.error(`[WebhookController] Could not record delivery ${deliveryId}: ${error.message}`);
+      return res.status(500).json({ success: false, error: 'Could not record delivery' });
     }
 
-    // 5. Submit PR Review with line comments to GitHub
-    await submitPullRequestReview(owner, repoName, pullNumber, headSha, formattedReviewResult);
+    try {
+      await deps.enqueueReview({ deliveryId });
+    } catch (error) {
+      // Forget the delivery so GitHub's redelivery is accepted instead of being treated as a duplicate
+      await deps.deleteSession(session._id).catch(() => {});
+      console.error(`[WebhookController] Could not queue review for delivery ${deliveryId}: ${error.message}`);
+      return res.status(503).json({ success: false, error: 'Could not queue review; redeliver later' });
+    }
 
-    return res.status(200).json({
+    console.log(`[WebhookController] Queued review for PR #${pullNumber} (${action || 'opened'}) on ${owner}/${repoName} (delivery ${deliveryId}).`);
+    return res.status(202).json({
       success: true,
-      message: 'PR diff successfully processed and precision review generated.',
-      sessionId: reviewSession ? reviewSession._id : 'ephemeral_session',
-      review: reviewData,
+      queued: true,
+      deliveryId,
+      sessionId: session._id,
     });
-  } catch (error) {
-    console.error(`[WebhookController] Error executing PR review pipeline: ${error.message}`);
-    if (reviewSession && mongoose.connection.readyState === 1) {
-      reviewSession.status = 'failed';
-      reviewSession.errorMessage = error.message;
-      await reviewSession.save();
-    }
-    return res.status(500).json({
-      success: false,
-      error: error.message,
-      sessionId: reviewSession ? reviewSession._id : undefined,
-    });
-  }
+  };
 }
+
+export const handleWebhook = createWebhookHandler();
 
 /**
  * Retrieve review history by PR or list all sessions.

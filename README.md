@@ -94,9 +94,9 @@ Naive Baseline (Diff-Only)                 Precision RAG (Call-Graph)
 ```
 
 ### RAG Data Flow Lifecycle
-1. **Webhook Ingestion**: Express receives a `pull_request` event (`opened`, `synchronize`).
-2. **Diff Extraction**: The patch is extracted via Octokit or the webhook payload.
-3. **Session Audit**: An initial `ReviewSession` record is persisted in MongoDB with status `processing`.
+1. **Webhook Ingestion**: Express verifies the `X-Hub-Signature-256` HMAC on a `pull_request` event (`opened`, `synchronize`, `reopened`), records the delivery in MongoDB (a unique index on GitHub's `X-GitHub-Delivery` ID drops redeliveries), queues the job on Amazon SQS, and answers `202` immediately — GitHub abandons deliveries after 10 seconds.
+2. **Review Worker**: The `review-worker` service long-polls SQS. A message is deleted only after the review is posted; failures are retried with backoff and moved to a dead-letter queue after 3 attempts. Each posted review carries a hidden delivery marker, so an at-least-once redelivery never posts the same review twice.
+3. **Diff Extraction**: The patch is fetched via Octokit (or taken from the webhook payload in local simulations).
 4. **AST Boundary & Call Extraction**: Tree-sitter parses the diff into AST scopes and extracts outbound S-expression function calls (`(call_expression ...)`).
 5. **Call-Graph Inbound Retrieval**: If a function declaration is modified, ChromaDB queries find all inbound callers in other files.
 6. **Architectural Guideline Retrieval**: ChromaDB matches semantic security/performance guidelines against modified code hunks.
@@ -217,6 +217,8 @@ precision-pr-reviewer/
    | `LLM_API_KEY` | Needed when `MOCK_LLM_MODE=false`. Free Groq keys come from [console.groq.com](https://console.groq.com/keys). |
    | `LLM_BASE_URL` | Any OpenAI-compatible chat API (default Groq: `https://api.groq.com/openai/v1`). |
    | `LLM_MODEL` | Model used for reviews (default `openai/gpt-oss-120b`). It must support `json_schema` structured outputs. |
+   | `SQS_QUEUE_URL` | Amazon SQS queue for review jobs, consumed by `review-worker`. Unset, reviews run in the background inside the webhook service with the same retry budget. |
+   | `AWS_REGION`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | Credentials for an IAM user limited to `SendMessage`, `ReceiveMessage`, `DeleteMessage`, `ChangeMessageVisibility` and `GetQueueAttributes` on that queue. |
 
 3. **Launch all 4 microservices:**
    ```bash

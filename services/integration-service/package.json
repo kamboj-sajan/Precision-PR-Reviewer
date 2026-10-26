@@ -7,9 +7,10 @@
   "scripts": {
     "start": "node src/server.js",
     "dev": "nodemon src/server.js",
-    "test": "node --test test/server.test.js"
+    "test": "node --test test/server.test.js test/queue.test.js"
   },
   "dependencies": {
+    "@aws-sdk/client-sqs": "^3.1150.0",
     "@octokit/rest": "^21.0.2",
     "@octokit/webhooks": "^13.4.0",
     "axios": "^1.7.9",
