@@ -2,7 +2,7 @@
 ### *Autonomous Cross-File Call-Graph RAG Architecture for Code Reviews*
 
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
-[![Node.js](https://img.shields.io/badge/Node.js-20.x-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
+[![Node.js](https://img.shields.io/badge/Node.js-22.x-339933?logo=nodedotjs&logoColor=white)](https://nodejs.org/)
 [![LangChain](https://img.shields.io/badge/LangChain-0.3+-1C3C3C?logo=langchain&logoColor=white)](https://langchain.com/)
 [![Tree-sitter](https://img.shields.io/badge/Tree--sitter-AST--Queries-4B8BBE?logo=python&logoColor=white)](https://tree-sitter.github.io/)
 [![ChromaDB](https://img.shields.io/badge/ChromaDB-Vector_Store-FF6F00?logoColor=white)](https://www.trychroma.com/)
@@ -239,7 +239,7 @@ precision-pr-reviewer/
 ### Option 2: Native Local Development
 
 #### Prerequisites
-- Node.js >= 20.x
+- Node.js >= 22.x
 - Python >= 3.11
 
 #### 1. Integration Service (Node.js)
