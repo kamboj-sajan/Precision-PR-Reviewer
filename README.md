@@ -8,7 +8,14 @@
 [![ChromaDB](https://img.shields.io/badge/ChromaDB-Vector_Store-FF6F00?logoColor=white)](https://www.trychroma.com/)
 [![MongoDB](https://img.shields.io/badge/MongoDB-7.0-47A248?logo=mongodb&logoColor=white)](https://www.mongodb.com/)
 [![Docker Compose](https://img.shields.io/badge/Docker-Compose_Ready-2496ED?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
+[![Amazon SQS](https://img.shields.io/badge/Amazon_SQS-Job_Queue-FF9900?logo=amazonsqs&logoColor=white)](https://aws.amazon.com/sqs/)
 [![Tests](https://img.shields.io/badge/Tests-Passing_100%25-brightgreen)](https://github.com/kamboj-sajan/Precision-PR-Reviewer)
+
+## 🎬 Demo
+
+![Demo: a pull request is reviewed through the SQS queue, a redelivered webhook is ignored, and a failing job is dead-lettered](docs/demo.gif)
+
+*40-second walkthrough of the live deployment, recorded from a real pull request and real server logs. [Full-quality video (MP4)](docs/demo.mp4).*
 
 ---
 
